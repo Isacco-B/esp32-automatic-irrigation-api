@@ -1,18 +1,23 @@
 from machine import Pin
 import network
 import uasyncio as asyncio
+import ntptime
 import time
 import re
 from secrets import WLAN_SSID, WLAN_PASSWORD
 
-# Constants
 WIFI_RETRY_INTERVAL = 2
 
-# PinOut
 led_wifi = Pin(12, Pin.OUT)
 
 
-# Wifi
+def sync_time():
+    try:
+        ntptime.settime()
+        print("Time synchronized and adjusted to timezone")
+    except Exception as e:
+        print(f"Failed to sync time: {e}")
+        
 def connect_to_wifi():
     """Connect to the specified WiFi network."""
     wlan = network.WLAN(network.STA_IF)
@@ -34,8 +39,6 @@ def is_wifi_connected():
     wlan = network.WLAN(network.STA_IF)
     return wlan.isconnected()
 
-
-# Data Validation
 def validate_program_data(data):
     valid_actions = {"create", "edit", "delete"}
     if "action" not in data or data["action"] not in valid_actions:
