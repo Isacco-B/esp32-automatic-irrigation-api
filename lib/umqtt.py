@@ -1,13 +1,24 @@
+import ssl
+
 import usocket as socket
 import ustruct as struct
-from ubinascii import hexlify
-import ssl
+
 
 class MQTTException(Exception):
     pass
 
+
 class MQTTClient:
-    def __init__(self, client_id, server, port=0, user=None, password=None, keepalive=0, ssl=False):
+    def __init__(
+        self,
+        client_id,
+        server,
+        port=0,
+        user=None,
+        password=None,
+        keepalive=0,
+        ssl=False,
+    ):
         if port == 0:
             port = 8883 if ssl else 1883
         self.client_id = client_id
@@ -100,7 +111,6 @@ class MQTTClient:
     def ping(self):
         self.sock.write(b"\xc0\0")
 
-
     def publish(self, topic, msg, retain=False, qos=0):
         pkt = bytearray(b"\x30\0\0\0")
         pkt[0] |= qos << 1 | retain
@@ -159,7 +169,7 @@ class MQTTClient:
             return None
         if res == b"":
             raise OSError(-1)
-        if res == b"\xd0": 
+        if res == b"\xd0":
             sz = self.sock.read(1)[0]
             assert sz == 0
             return None

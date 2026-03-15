@@ -1,122 +1,115 @@
-from machine import Pin
-import network
-import uasyncio as asyncio
-import ntptime
-import time
 import re
-from secrets import WLAN_SSID, WLAN_PASSWORD
+import time
+from secrets import WLAN_PASSWORD, WLAN_SSID
 
-WIFI_RETRY_INTERVAL = 2
+import network
+from machine import Pin
+
+from utils.timezone import sync_ntp
+
+WIFI_RETRY_INTERVAL = 1
 
 led_wifi = Pin(12, Pin.OUT)
+led_wifi.off()
 
 
-def sync_time():
-    try:
-        ntptime.settime()
-        print("Time synchronized and adjusted to timezone")
-    except Exception as e:
-        print(f"Failed to sync time: {e}")
-        
-def connect_to_wifi():
-    """Connect to the specified WiFi network."""
+def connect_to_wifi(timeout: int = 30) -> bool:
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
-    if not wlan.isconnected():
-        led_wifi.on()
-        print('wifi connection...')
-        wlan.connect(WLAN_SSID, WLAN_PASSWORD)
-        while not wlan.isconnected():
+
+    if wlan.isconnected():
+        led_wifi.off()
+        print(f"Already connected to: {WLAN_SSID}")
+        print(f"Connection details: {wlan.ifconfig()}")
+        return True
+
+    led_wifi.on()
+    print(f"Connecting to WiFi: {WLAN_SSID}")
+    wlan.connect(WLAN_SSID, WLAN_PASSWORD)
+
+    start_time = time.time()
+    while not wlan.isconnected():
+        if time.time() - start_time > timeout:
             led_wifi.on()
-            time.sleep(WIFI_RETRY_INTERVAL)
-            print('Retrying WiFi connection...')
+            print(f"WiFi connection timeout after {timeout}s")
+            return False
+        led_wifi.value(not led_wifi.value())
+        time.sleep(WIFI_RETRY_INTERVAL)
+        print(f"Connecting... ({int(time.time() - start_time)}s)")
+
     led_wifi.off()
-    print('Connected to:', WLAN_SSID)
-    print('Connection details:', wlan.ifconfig())
-    print("------------------------------------")
+    print(f"Connected to: {WLAN_SSID}")
+    print(f"Connection details: {wlan.ifconfig()}")
 
-def is_wifi_connected():
+    ntp_ok = sync_ntp()
+    if not ntp_ok:
+        print("Time synchronization failed")
+
+    return True
+
+
+def is_wifi_connected() -> bool:
     wlan = network.WLAN(network.STA_IF)
-    return wlan.isconnected()
+    connected = wlan.isconnected()
+    led_wifi.off() if connected else led_wifi.on()
+    return connected
 
-def validate_program_data(data):
-    valid_actions = {"create", "edit", "delete"}
-    if "action" not in data or data["action"] not in valid_actions:
-        return False, "Invalid action."
 
-    if data["action"] == "delete":
-        if "id" not in data:
-            return False, "Missing id."
-        return True, "Validation successful."
+def validate_program_data(data: dict) -> tuple:
+    """Validate a complete program payload (create)."""
+    if not isinstance(data, dict):
+        return False, "Dati programma non validi"
 
-    if "program" not in data:
-        return False, "Missing program data."
+    if not data.get("name"):
+        return False, "Nome programma mancante"
 
-    program = data["program"]
+    if data.get("zone") not in {f"zone_{i}" for i in range(1, 9)}:
+        return False, "Zona non valida (zone_1 - zone_8)"
 
-    if data["action"] == "edit":
-        if "id" not in data:
-            return False, "Missing id."
+    active_days = data.get("active_days")
+    if not isinstance(active_days, list) or not active_days:
+        return False, "Giorni attivi non validi"
+    if not all(isinstance(d, int) and 0 <= d <= 6 for d in active_days):
+        return False, "Giorni attivi non validi (valori 0-6, 0=Lunedì)"
 
-        if "zone" in program and program["zone"] not in {
-            f"zone_{i}" for i in range(1, 9)
-        }:
-            return False, "Invalid or missing zone."
+    start_time = data.get("start_time")
+    if not start_time or not re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", start_time):
+        return False, "Formato orario non valido (HH:MM)"
 
-        if "active_day" in program and not re.match(
-            r"^[0-6](-[0-6])*$", program["active_day"]
-        ):
-            return False, "Invalid active_day format."
+    duration = data.get("duration")
+    if not isinstance(duration, int) or duration <= 0:
+        return False, "Durata non valida (intero positivo in secondi)"
 
-        if "start_time" in program and not re.match(
-            r"^(?:[01]\d|2[0-3]):[0-5]\d$", program["start_time"]
-        ):
-            return False, "Invalid start_time format."
+    if "is_active" in data and not isinstance(data["is_active"], bool):
+        return False, "Valore is_active non valido"
 
-        if (
-            "duration" in program
-            and not isinstance(program["duration"], int)
-            and not (0 <= program["duration"] <= 3600)
-        ):
-            return False, "Invalid or missing duration."
+    return True, "OK"
 
-        if "is_active" in program and not isinstance(program["is_active"], bool):
-            return False, "Invalid or missing is_active."
 
-        if "is_running" in program and not isinstance(program["is_running"], bool):
-            return False, "Invalid or missing is_running."
+def validate_program_updates(data: dict) -> tuple:
+    """Validate a partial program payload (edit)."""
+    if not isinstance(data, dict) or not data:
+        return False, "Dati aggiornamento non validi"
 
-        return True, "Validation successful."
+    if "zone" in data and data["zone"] not in {f"zone_{i}" for i in range(1, 9)}:
+        return False, "Zona non valida (zone_1 - zone_8)"
 
-    if "name" not in program:
-        return False, "Invalid or missing name."
+    if "active_days" in data:
+        active_days = data["active_days"]
+        if not isinstance(active_days, list) or not active_days:
+            return False, "Giorni attivi non validi"
+        if not all(isinstance(d, int) and 0 <= d <= 6 for d in active_days):
+            return False, "Giorni attivi non validi (valori 0-6, 0=Lunedì)"
 
-    if "zone" not in program or program["zone"] not in {
-        f"zone_{i}" for i in range(1, 9)
-    }:
-        return False, "Invalid or missing zone."
+    if "start_time" in data:
+        if not re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", data["start_time"]):
+            return False, "Formato orario non valido (HH:MM)"
 
-    if "active_day" not in program or not re.match(
-        r"^[0-6](-[0-6])*$", program["active_day"]
-    ):
-        return False, "Invalid active_day format."
+    if "duration" in data:
+        if not isinstance(data["duration"], int) or data["duration"] <= 0:
+            return False, "Durata non valida (intero positivo in secondi)"
 
-    if "start_time" not in program or not re.match(
-        r"^(?:[01]\d|2[0-3]):[0-5]\d$", program["start_time"]
-    ):
-        return False, "Invalid start_time format."
+    if "is_active" in data and not isinstance(data["is_active"], bool):
+        return False, "Valore is_active non valido"
 
-    if (
-        "duration" not in program
-        or not isinstance(program["duration"], int)
-        or not (0 <= program["duration"] <= 3600)
-    ):
-        return False, "Invalid or missing duration."
-
-    if "is_active" not in program or not isinstance(program["is_active"], bool):
-        return False, "Invalid or missing is_active."
-
-    if "is_running" not in program or not isinstance(program["is_running"], bool):
-        return False, "Invalid or missing is_running."
-
-    return True, "Validation successful."
+    return True, "OK"

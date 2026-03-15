@@ -1,2 +1,5 @@
 .secrets.py
 /secrets.py
+.venv
+/venv
+.vscode
